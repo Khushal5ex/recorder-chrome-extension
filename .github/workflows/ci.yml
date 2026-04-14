@@ -3,8 +3,7 @@ name: CI
 on:
   push:
     branches: ["**"]
-  pull_request:
-    branches: ["**"]
+  
 
 jobs:
   build:
@@ -50,24 +49,40 @@ jobs:
             echo "No test script found, skipping tests"
           fi
 
-      # 6. Validate manifest.json exists and has required fields
-      - name: Validate manifest.json
+      # 6. Auto-detect manifest.json location
+      - name: Locate manifest.json
         run: |
-          if [ ! -f manifest.json ]; then
-            echo "ERROR: manifest.json not found in root"
+          MANIFEST_PATH=$(find . \
+            -name "manifest.json" \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" \
+            | head -n 1)
+
+          if [ -z "$MANIFEST_PATH" ]; then
+            echo "ERROR: manifest.json not found anywhere in the repo"
             exit 1
           fi
 
+          MANIFEST_DIR=$(dirname "$MANIFEST_PATH")
+          echo "Found manifest.json at: $MANIFEST_PATH"
+          echo "Extension root: $MANIFEST_DIR"
+          echo "MANIFEST_DIR=$MANIFEST_DIR" >> $GITHUB_ENV
+
+      # 7. Validate manifest.json has required fields
+      - name: Validate manifest.json
+        run: |
+          MANIFEST_FILE="$MANIFEST_DIR/manifest.json"
+
           # Check it is valid JSON
-          python3 -c "import json, sys; json.load(open('manifest.json'))" \
+          python3 -c "import json; json.load(open('$MANIFEST_FILE'))" \
             && echo "manifest.json is valid JSON" \
             || (echo "ERROR: manifest.json is not valid JSON" && exit 1)
 
           # Check required fields exist
-          python3 - <<'EOF'
+          python3 - <<EOF
           import json, sys
 
-          with open("manifest.json") as f:
+          with open("$MANIFEST_FILE") as f:
               m = json.load(f)
 
           required = ["name", "version", "manifest_version"]
@@ -80,14 +95,16 @@ jobs:
           print(f"manifest.json OK — name={m['name']!r}, version={m['version']!r}, manifest_version={m['manifest_version']}")
           EOF
 
-      # 7. Package extension as ZIP (excludes dev files)
+      # 8. Package extension as ZIP (only extension folder, excludes dev files)
       - name: Package extension as ZIP
         run: |
-          VERSION=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
+          MANIFEST_FILE="$MANIFEST_DIR/manifest.json"
+          VERSION=$(python3 -c "import json; print(json.load(open('$MANIFEST_FILE'))['version'])")
           ZIP_NAME="extension-v${VERSION}.zip"
-          echo "Packaging version $VERSION → $ZIP_NAME"
+          echo "Packaging version $VERSION from '$MANIFEST_DIR' → $ZIP_NAME"
 
-          zip -r "$ZIP_NAME" . \
+          cd "$MANIFEST_DIR"
+          zip -r "../$ZIP_NAME" . \
             --exclude "*.git*" \
             --exclude "node_modules/*" \
             --exclude "*.zip" \
@@ -102,12 +119,13 @@ jobs:
             --exclude ".github/*" \
             --exclude "*.DS_Store"
 
+          cd -
           echo "ZIP contents:"
           unzip -l "$ZIP_NAME"
 
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
-      # 8. Upload ZIP as a build artifact (downloadable from the Actions run page)
+      # 9. Upload ZIP as a build artifact (downloadable from the Actions run page)
       - name: Upload extension ZIP
         uses: actions/upload-artifact@v4
         with:
